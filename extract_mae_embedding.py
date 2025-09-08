@@ -2,11 +2,15 @@
 # @Author  : bbbdbbb
 # @File    : extract_mae_embedding.py
 # @Description : extract embedding from pretrain models of mae
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 import os
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+import cv2
+import tempfile
+import shutil
 
 import torch
 import torch.nn.parallel
@@ -14,11 +18,12 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 from timm.models.layers import trunc_normal_
+from PIL import Image
 
 import sys
 
 sys.path.append('../../')
-import config
+# import config
 from dataset import FaceDataset
 
 from mae import models_vit
@@ -27,7 +32,54 @@ from scipy.stats import norm
 import scipy.stats as stats
 
 
-def extract(data_loader, model):
+class TempVideoDataset(torch.utils.data.Dataset):
+    """Dataset that extracts frames on-the-fly from a video file"""
+    def __init__(self, video_path, transform=None):
+        self.video_path = video_path
+        self.transform = transform
+        self.frames = self._extract_frames_to_temp()
+        
+    def _extract_frames_to_temp(self):
+        """Extract all frames to a temporary directory"""
+        self.temp_dir = tempfile.mkdtemp()
+        cap = cv2.VideoCapture(self.video_path)
+        
+        frame_paths = []
+        frame_count = 0
+        
+        while cap.isOpened():
+            success, frame = cap.read()
+            if not success:
+                break
+                
+            # Save frame temporarily
+            frame_filename = f"{frame_count + 1:05d}.bmp"
+            frame_path = os.path.join(self.temp_dir, frame_filename)
+            cv2.imwrite(frame_path, frame)
+            frame_paths.append(frame_path)
+            frame_count += 1
+            
+        cap.release()
+        return frame_paths
+    
+    def __len__(self):
+        return len(self.frames)
+    
+    def __getitem__(self, index):
+        frame_path = self.frames[index]
+        img = Image.open(frame_path)
+        if self.transform is not None:
+            img = self.transform(img)
+        name = os.path.basename(frame_path)[:-4]
+        return img, name
+    
+    def cleanup(self):
+        """Remove temporary directory"""
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+
+def extract(data_loader, model, device):
     model.eval()
     with torch.no_grad():
         features, timestamps = [], []
@@ -45,17 +97,13 @@ def extract(data_loader, model):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run.')
-    parser.add_argument('--dataset', type=str, default='', help='input dataset')
+    parser.add_argument('--dataset', type=str, default='MELD', help='input dataset')
+    parser.add_argument('--video_dir', type=str, required=True, help='Directory containing video files')
+    parser.add_argument('--save_dir', type=str, required=True, help='Directory to save features')
     parser.add_argument('--feature_level', type=str, default='UTTERANCE', help='feature level [FRAME or UTTERANCE]')
- 
-    # parser.add_argument('--pretrain_model', type=str, default='mae_random_300', help='pth of pretrain MAE model')
-    # parser.add_argument('--pretrain_model', type=str, default='mae_DFEW_ck16', help='pth of pretrain MAE model')
-    # parser.add_argument('--feature_name', type=str, default='mae_DFEW_ck16', help='pth of pretrain MAE model')
     parser.add_argument('--pretrain_model', type=str, default='mae_checkpoint-340', help='pth of pretrain MAE model')
     parser.add_argument('--feature_name', type=str, default='mae_340', help='pth of pretrain MAE model')
-
-    parser.add_argument('--device', default='cuda:1',
-                        help='device to use for training / testing')
+    parser.add_argument('--device', default='cuda:0', help='device to use for training / testing')
     parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
                         help='Name of model to train vit_large_patch16 vit_huge_patch14')
     parser.add_argument('--nb_classes', default=7, type=int, help='number of the classification types')
@@ -68,26 +116,12 @@ if __name__ == '__main__':
     params = parser.parse_args()
 
     print(f'==> Extracting mae embedding...')
-    # face_dir = config.PATH_TO_RAW_FACE[params.dataset]
-    # save_dir = os.path.join(config.PATH_TO_FEATURES[params.dataset], f'{params.feature_name}_{params.feature_level[:3]}')
-    # if not os.path.exists(save_dir): os.makedirs(save_dir)
-    if params.dataset == "MER2023":
-        face_dir = "/home/amax/big_space/datasets/MER2023/dataset-process/openface_face"
-        save_dir = "/home/amax/big_space/datasets/MER2023/dataset-process/features_tmp/mae_340_UTT"
-    elif params.dataset == "EMER":
-        face_dir = "/home/amax/big_space/datasets/MER2024/EMER/all_face"
-        save_dir = "/home/amax/big_space/datasets/MER2024/EMER/features_tmp/mae_340_UTT"
-    elif params.dataset == "MER2024":
-        face_dir = "/home/amax/big_space/datasets/MER2024/dataset-process/all_face"
-        save_dir = "/home/amax/big_space/datasets/MER2024/dataset-process/features_tmp/mae_340_UTT"
-    elif params.dataset == "MER2024_20000":
-        face_dir = "/home/amax/big_space/datasets/MER2024/dataset-process/all_face"
-        save_dir = "/home/amax/big_space/datasets/MER2024/dataset-process/features_20000_tmp/mae_340_UTT"
-    elif params.dataset == "DFEW":
-        face_dir = "/home/amax/big_space/datasets/DFEW/dataset-process/openface_face"
-        save_dir = "/home/amax/big_space/datasets/DFEW/dataset-process/features_tmp/mae_340_UTT"
-
-    if not os.path.exists(save_dir): os.makedirs(save_dir)
+    
+    video_dir = params.video_dir
+    save_dir = params.save_dir
+    
+    if not os.path.exists(save_dir): 
+        os.makedirs(save_dir)
 
     # load model
     model = models_vit.__dict__[params.model](
@@ -95,94 +129,81 @@ if __name__ == '__main__':
         drop_path_rate=params.drop_path,
         global_pool=params.global_pool,
     )
+    
     if True:
-        # checkpoint_file = os.path.join(config.PATH_TO_PRETRAINED_MODELS, 'mae', params.pretrain_model + '.pth')
-        checkpoint_file = "/home/amax/project/MER2024/MER2024-Baseline/pretrained_models/mae/mae_checkpoint-340.pth" # set your mae path
-        checkpoint = torch.load(checkpoint_file, map_location='cpu')
+        checkpoint_file = "D:\\Acads\\BTP\\preprocessing_code\\models_weights\\mae_checkpoint-340.pth"
+        checkpoint = torch.load(checkpoint_file, map_location=params.device, weights_only=False)
 
         print("Load pre-trained checkpoint from: %s" % checkpoint_file)
         checkpoint_model = checkpoint['model']
 
-        # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg.missing_keys)
         trunc_normal_(model.head.weight, std=2e-5)
 
     device = torch.device(params.device)
     model.to(device)
+
+    if torch.cuda.is_available():
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        print("CUDA not available, using CPU")
+
     transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()])
 
-    # # for MER2024 candidate 20000
-    # import pandas as pd
-    # filter_csv_path = "/home/amax/big_space/datasets/MER2024/dataset-process/my-process/candidate_20000.csv"
-    # filter_df = pd.read_csv(filter_csv_path)
-    # filter_names = set(filter_df['name'].tolist())
-
-    # # Interrupt in the middle, continue
-    # # feature_path = "/home/amax/big_space/datasets/MER2024/dataset-process/good_features/mae_399_UTT/"
-    # feature_path = "/home/amax/big_space/datasets/MER2024/dataset-process/features_20000/mae_340_UTT/"
-    # feats = os.listdir(feature_path)
-    # for i in range(len(feats)):
-    #     feats[i] = feats[i].split('.')[0]
-
-    # extract embedding video by video
-    vids = os.listdir(face_dir)
+    # Get all video files
+    video_files = [f for f in os.listdir(video_dir) if f.endswith('.mp4')]
     EMBEDDING_DIM = -1
-    print(f'Find total "{len(vids)}" videos.')
-    for i, vid in enumerate(vids, 1):
-        # # for MER2024 candidate 20000
-        # if vid not in filter_names:
-        #     print("continue")
-        #     continue
+    print(f'Find total "{len(video_files)}" videos.')
+    
+    for i, video_file in enumerate(video_files, 1):
+        video_name = os.path.splitext(video_file)[0]  # Remove .mp4 extension
+        video_path = os.path.join(video_dir, video_file)
+        
+        print(f"Processing video '{video_name}' ({i}/{len(video_files)})...")
 
-        # # Interrupt in the middle, continue
-        # if vid in feats:
-        #     print("continue")
-        #     continue
+        # Create temporary dataset
+        dataset = TempVideoDataset(video_path, transform=transform)
+        
+        try:
+            if len(dataset) == 0:
+                print("Warning: number of frames of video {} should not be zero.".format(video_name))
+                embeddings, framenames = [], []
+            else:
+                data_loader = torch.utils.data.DataLoader(dataset,
+                                                          batch_size=params.batch_size,
+                                                          num_workers=4,  # Reduced workers for temp files
+                                                          pin_memory=True)
+                embeddings, framenames = extract(data_loader, model, device)
 
-        print(f"Processing video '{vid}' ({i}/{len(vids)})...")
+            # save results
+            if len(embeddings) > 0:
+                indexes = np.argsort(framenames)
+                embeddings = embeddings[indexes]
+                framenames = framenames[indexes]
+                EMBEDDING_DIM = max(EMBEDDING_DIM, np.shape(embeddings)[-1])
 
-        # forward
-        dataset = FaceDataset(vid, face_dir, transform=transform)
-        if len(dataset) == 0:
-            print("Warning: number of frames of video {} should not be zero.".format(vid))
-            embeddings, framenames = [], []
-        else:
-            data_loader = torch.utils.data.DataLoader(dataset,
-                                                      batch_size=params.batch_size,
-                                                      num_workers=10,
-                                                      pin_memory=True)
-            embeddings, framenames = extract(data_loader, model)
-
-        # save results
-        indexes = np.argsort(framenames)
-        embeddings = embeddings[indexes]
-        framenames = framenames[indexes]
-        EMBEDDING_DIM = max(EMBEDDING_DIM, np.shape(embeddings)[-1])
-
-        csv_file = os.path.join(save_dir, f'{vid}.npy')
-        if params.feature_level == 'FRAME':
-            embeddings = np.array(embeddings).squeeze()
-            if len(embeddings) == 0:
-                embeddings = np.zeros((1, EMBEDDING_DIM))
-            elif len(embeddings.shape) == 1:
-                embeddings = embeddings[np.newaxis, :]
-            np.save(csv_file, embeddings)
-        elif params.feature_level == 'BLK':
-            embeddings = np.array(embeddings)
-            if len(embeddings) == 0:
-                embeddings = np.zeros((197, EMBEDDING_DIM))
-            elif len(embeddings.shape) == 3:
-                embeddings = np.mean(embeddings, axis=0)
-            np.save(csv_file, embeddings)
-            
-        else:
-            embeddings = np.array(embeddings).squeeze()
-            if len(embeddings) == 0:
-                embeddings = np.zeros((EMBEDDING_DIM,))
-            elif len(embeddings.shape) == 2:
-                embeddings = np.mean(embeddings, axis=0)
-            np.save(csv_file, embeddings)
+            csv_file = os.path.join(save_dir, f'{video_name}.npy')
+            if params.feature_level == 'FRAME':
+                embeddings = np.array(embeddings).squeeze()
+                if len(embeddings) == 0:
+                    embeddings = np.zeros((1, EMBEDDING_DIM))
+                elif len(embeddings.shape) == 1:
+                    embeddings = embeddings[np.newaxis, :]
+                np.save(csv_file, embeddings)
+            else:  # UTTERANCE level
+                embeddings = np.array(embeddings).squeeze()
+                if len(embeddings) == 0:
+                    embeddings = np.zeros((EMBEDDING_DIM,))
+                elif len(embeddings.shape) == 2:
+                    embeddings = np.mean(embeddings, axis=0)
+                np.save(csv_file, embeddings)
+                
+        finally:
+            # Always cleanup temporary files
+            dataset.cleanup()
+            print(f"Cleaned up temporary files for {video_name}")
 
 
 # EMER
