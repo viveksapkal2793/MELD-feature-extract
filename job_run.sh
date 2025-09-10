@@ -1,19 +1,29 @@
 #!/bin/bash
-#SBATCH --job-name=mae_extract      # Job name
-#SBATCH --output=logs/%x_%j.out     # Output log file (%j = job ID)
-#SBATCH --error=logs/%x_%j.err      # Error log file
-#SBATCH --partition=gpu             # Partition (queue), check your cluster’s partition names
-#SBATCH --gres=gpu:1                # Request 1 GPU
-#SBATCH --mem=8G                   # Memory (adjust as needed)
-#SBATCH --cpus-per-task=8           # Number of CPU cores
-#SBATCH --time=00:10:00             # Max runtime (24 hrs here)
+#SBATCH --job-name=mae_meld_extract
+#SBATCH --output=/scratch/data/bikash_rs/vivek/MELD-feature-extract/logs/%x_%j.out
+#SBATCH --error=/scratch/data/bikash_rs/vivek/MELD-feature-extract/logs/%x_%j.err
+#SBATCH --partition=dgx          # GPU partition
+#SBATCH --gres=gpu:1             # 1 GPU
+#SBATCH --cpus-per-task=12       # CPUs for dataloader + decoding
+#SBATCH --mem=64G                # Memory
+#SBATCH --time=24:00:00          # Walltime
+#SBATCH --nodes=1                # Single node
 
-# Load required modules
+# Load modules (adjust to your cluster setup)
 module load python/3.10
-# module load cuda/11.8   # Example, check your server’s CUDA
+# module load cuda/11.8
 
-# Activate virtual environment
+# Activate your venv
 source venv/bin/activate
 
-# Test GPU access (optional sanity check)
+# Sanity check GPU
 python gpu_check.py
+
+# Run extraction
+# python extract_mae_embedding.py \
+#     --dataset 'MELD' \
+#     --video_dir "/scratch/data/bikash_rs/vivek/dataset/MELD.Raw/train_splits" \
+#     --save_dir "/scratch/data/bikash_rs/vivek/dataset/Meld_feat_ext/train_mae_feat" \
+#     --pretrain_model "mae_checkpoint-340" \
+#     --device cuda \
+#     --feature_level UTTERANCE
