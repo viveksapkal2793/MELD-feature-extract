@@ -131,14 +131,17 @@ if __name__ == '__main__':
     )
     
     if True:
-        checkpoint_file = "D:\\Acads\\BTP\\preprocessing_code\\models_weights\\mae_checkpoint-340.pth"
+        checkpoint_file = os.path.join(
+            "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
+            f"{params.pretrain_model}.pth"
+        )
         checkpoint = torch.load(checkpoint_file, map_location=params.device, weights_only=False)
 
         print("Load pre-trained checkpoint from: %s" % checkpoint_file)
         checkpoint_model = checkpoint['model']
 
         msg = model.load_state_dict(checkpoint_model, strict=False)
-        print(msg.missing_keys)
+        print("Missing keys:", msg.missing_keys)
         trunc_normal_(model.head.weight, std=2e-5)
 
     device = torch.device(params.device)
