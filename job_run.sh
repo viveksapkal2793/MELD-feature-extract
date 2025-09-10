@@ -5,8 +5,8 @@
 #SBATCH --partition=dgx          # GPU partition
 #SBATCH --gres=gpu:1             # 1 GPU
 #SBATCH --cpus-per-task=12       # CPUs for dataloader + decoding
-#SBATCH --mem=64G                # Memory
-#SBATCH --time=24:00:00          # Walltime
+#SBATCH --mem=16G                # Memory
+#SBATCH --time=00:10:00          # Walltime
 #SBATCH --nodes=1                # Single node
 
 # Load modules (adjust to your cluster setup)
