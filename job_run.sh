@@ -2,12 +2,12 @@
 #SBATCH --job-name=mae_meld_extract
 #SBATCH --output=/scratch/data/bikash_rs/vivek/MELD-feature-extract/logs/%x_%j.out
 #SBATCH --error=/scratch/data/bikash_rs/vivek/MELD-feature-extract/logs/%x_%j.err
-#SBATCH --partition=dgx              # GPU partition
-#SBATCH --gres=gpu:1                 # Request 1 GPU
+#SBATCH --partition=test              # GPU partition
 #SBATCH --cpus-per-task=12           # CPUs for dataloader + decoding
 #SBATCH --mem-per-cpu=2G             # 2 GB per CPU core = 24 GB total
 #SBATCH --time=00:10:00              # Walltime
 #SBATCH --nodes=1                    # Single node
+#SBATCH --ntasks=1                   # Run a single task
 #SBATCH -D /scratch/data/bikash_rs/vivek/MELD-feature-extract   # Working directory (important!)
 
 # Load modules (adjust to your cluster setup)
