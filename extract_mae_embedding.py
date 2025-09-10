@@ -129,6 +129,13 @@ if __name__ == '__main__':
         drop_path_rate=params.drop_path,
         global_pool=params.global_pool,
     )
+
+    if params.device.startswith('cuda') and torch.cuda.is_available():
+        device = torch.device(params.device)
+    else:
+        params.device = 'cpu'
+        device = torch.device('cpu')
+        print("Warning: CUDA not available, using CPU")
     
     if True:
         checkpoint_file = os.path.join(

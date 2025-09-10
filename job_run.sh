@@ -21,4 +21,4 @@ source venv/bin/activate
 # python gpu_check.py
 
 # Run extraction
-python extract_mae_embedding.py --dataset 'MELD' --video_dir "/scratch/data/bikash_rs/vivek/dataset/MELD.Raw/train_splits" --save_dir "/scratch/data/bikash_rs/vivek/dataset/Meld_feat_ext/train_mae_feat" --pretrain_model "mae_checkpoint-340" --device cuda --feature_level UTTERANCE
+python extract_mae_embedding.py --dataset 'MELD' --video_dir "/scratch/data/bikash_rs/vivek/dataset/MELD.Raw/train_splits" --save_dir "/scratch/data/bikash_rs/vivek/dataset/Meld_feat_ext/train_mae_feat" --pretrain_model "mae_checkpoint-340" --device cpu --feature_level UTTERANCE
