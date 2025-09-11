@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mae_meld_extract
+#SBATCH --job-name=videomae_meld_dev
 #SBATCH --output=/scratch/data/bikash_rs/vivek/MELD-feature-extract/logs/%x_%j.out
 #SBATCH --error=/scratch/data/bikash_rs/vivek/MELD-feature-extract/logs/%x_%j.err
 #SBATCH --partition=small              # GPU partition
