@@ -244,8 +244,8 @@ if __name__ == '__main__':
 
     if True:
         checkpoint_file = os.path.join(
-            # "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
-            "D:\Acads\BTP\preprocessing_code\models_weights",
+            "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
+            # "D:\Acads\BTP\preprocessing_code\models_weights",
             f"{params.pretrain_model}.pth"
         )
         print("Load pre-trained checkpoint from: %s" % checkpoint_file)
