@@ -2,11 +2,14 @@
 # @Author  : bbbdbbb
 # @File    : extract_maeVideo_embedding.py
 # @Description : load maeVideo model to extract video feature embedding
+
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message="Overwriting.*in registry")
 import os
 import argparse
 import numpy as np
+import matplotlib.pyplot as plt
 import cv2
 import tempfile
 import shutil
@@ -18,17 +21,19 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 from timm.models.layers import trunc_normal_
+from timm.models import create_model
 
 import sys
 sys.path.append('../../')
 
+from maeVideo import models_vit
+from collections import OrderedDict
 from maeVideo.modeling_finetune import vit_large_patch16_224
 from maeVideo.video_transform import *
-from collections import OrderedDict
 
 
 class SmartVideoDataset(torch.utils.data.Dataset):
-    """Dataset that extracts only needed frames from videos"""
+    """Dataset that extracts only needed frames from videos on-the-fly"""
     def __init__(self, video_path, num_segments=8, new_length=2, transform=None):
         self.video_path = video_path
         self.num_segments = num_segments
@@ -96,31 +101,53 @@ class SmartVideoDataset(torch.utils.data.Dataset):
             
         cap.release()
         
-        # Sort frame paths to match the original order
-        frame_paths.sort()
-        return frame_paths
+        # Pad to get exactly 16 frames (8 segments * 2 frames each)
+        while len(frame_paths) < 16:
+            frame_paths.append(frame_paths[-1] if frame_paths else None)
+            
+        return frame_paths[:16]  # Ensure exactly 16 frames
     
     def __len__(self):
         return 1  # We return one clip per video
     
     def __getitem__(self, index):
-        # Load all sampled frames
+        # Load all sampled frames as PIL Images
         images = []
         for frame_path in self.frames:
-            img = Image.open(frame_path).convert('RGB')
+            if frame_path and os.path.exists(frame_path):
+                img = Image.open(frame_path).convert('RGB')
+            else:
+                # Create a black image if frame doesn't exist
+                img = Image.new('RGB', (224, 224), color='black')
             images.append(img)
             
-        # Apply transforms
-        if self.transform is not None:
-            images = self.transform(images)
+        # Ensure we have exactly 16 frames
+        while len(images) < 16:
+            images.append(images[-1] if images else Image.new('RGB', (224, 224), color='black'))
+        images = images[:16]
             
-        # Stack frames into tensor format expected by VideoMAE
-        # Expected format: (T, C, H, W)
-        if isinstance(images, list):
-            images = torch.stack([transforms.ToTensor()(img) for img in images])
+        # Apply video transforms
+        if self.transform is not None:
+            transformed_images = self.transform(images)
+        else:
+            # Fallback transform
+            from maeVideo.video_transform import GroupResize, Stack, ToTorchFormatTensor
+            transform = transforms.Compose([
+                GroupResize(224),
+                Stack(),
+                ToTorchFormatTensor()
+            ])
+            transformed_images = transform(images)
         
+        # Reshape following the same pattern as dataset_MER.py
+        if isinstance(transformed_images, torch.Tensor):
+            # The transform should give us (C*T, H, W), reshape to (T, C, H, W) then transpose
+            transformed_images = torch.reshape(transformed_images, (16, 3, 224, 224))  # (T, C, H, W)
+            transformed_images = transformed_images.transpose(0, 1)  # -> (C, T, H, W)
+        
+        # Get video name from path
         video_name = os.path.splitext(os.path.basename(self.video_path))[0]
-        return images, video_name
+        return transformed_images, video_name
     
     def cleanup(self):
         """Remove temporary directory"""
@@ -129,7 +156,6 @@ class SmartVideoDataset(torch.utils.data.Dataset):
 
 
 def load_state_dict(model, state_dict, prefix='', ignore_missing="relative_position_index"):
-    # ... (same as original)
     missing_keys = []
     unexpected_keys = []
     error_msgs = []
@@ -183,12 +209,16 @@ if __name__ == '__main__':
     parser.add_argument('--video_dir', type=str, required=True, help='Directory containing video files')
     parser.add_argument('--save_dir', type=str, required=True, help='Directory to save features')
     parser.add_argument('--feature_level', type=str, default='UTTERANCE', help='feature level [FRAME or UTTERANCE]')
-    parser.add_argument('--pretrain_model', type=str, default='VoxCeleb_ckp49', help='pth of pretrain MAE model')
-    parser.add_argument('--feature_name', type=str, default='VoxCeleb_ckp49', help='pth of pretrain MAE model')
+    parser.add_argument('--pretrain_model', type=str, default='maeVideo_ckp199', help='pth of pretrain MAE model')
+    parser.add_argument('--feature_name', type=str, default='maeVideo_ckp199', help='pth of pretrain MAE model')
     parser.add_argument('--device', default='cuda:0', help='device to use for training / testing')
     parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--nb_classes', default=6, type=int, help='number of the classification types')
+    parser.add_argument('--drop_path', type=float, default=0.1, metavar='PCT', help='Drop path rate (default: 0.1)')
+    parser.add_argument('--global_pool', action='store_true')
+    parser.add_argument('--cls_token', action='store_false', dest='global_pool',
+                        help='Use class token instead of global pool for classification')
     parser.add_argument('--batch_size', default=1, type=int)
 
     params = parser.parse_args()
@@ -201,13 +231,25 @@ if __name__ == '__main__':
     if not os.path.exists(save_dir): 
         os.makedirs(save_dir)
 
+    # Check device availability
+    if params.device.startswith('cuda') and torch.cuda.is_available():
+        device = torch.device(params.device)
+    else:
+        params.device = 'cpu'
+        device = torch.device('cpu')
+        print("Warning: CUDA not available, using CPU")
+
     # load model
     model = vit_large_patch16_224()
 
     if True:
-        checkpoint_file = "D:\\Acads\\BTP\\preprocessing_code\\models_weights\\maeVideo_ckp199.pth"
+        checkpoint_file = os.path.join(
+            # "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
+            "D:\Acads\BTP\preprocessing_code\models_weights",
+            f"{params.pretrain_model}.pth"
+        )
         print("Load pre-trained checkpoint from: %s" % checkpoint_file)
-        checkpoint = torch.load(checkpoint_file, map_location='cpu')
+        checkpoint = torch.load(checkpoint_file, map_location=params.device, weights_only=False)
 
         checkpoint_model = None
         for model_key in 'model|module'.split('|'):
@@ -218,7 +260,6 @@ if __name__ == '__main__':
         if checkpoint_model is None:
             checkpoint_model = checkpoint
             
-        # ... (rest of checkpoint loading logic same as original)
         state_dict = model.state_dict()
         for k in ['head.weight', 'head.bias']:
             if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
@@ -236,15 +277,46 @@ if __name__ == '__main__':
                 new_dict[key] = checkpoint_model[key]
         checkpoint_model = new_dict
 
+        # interpolate position embedding
+        if 'pos_embed' in checkpoint_model:
+            pos_embed_checkpoint = checkpoint_model['pos_embed']
+            embedding_size = pos_embed_checkpoint.shape[-1]
+            num_patches = model.patch_embed.num_patches
+            num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+
+            orig_size = int(
+                ((pos_embed_checkpoint.shape[-2] - num_extra_tokens) // (16 // model.patch_embed.tubelet_size)) ** 0.5)
+            new_size = int((num_patches // (16 // model.patch_embed.tubelet_size)) ** 0.5)
+            
+            if orig_size != new_size:
+                print("Position interpolate from %dx%d to %dx%d" % (orig_size, orig_size, new_size, new_size))
+                extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+                pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+                pos_tokens = pos_tokens.reshape(-1, 16 // model.patch_embed.tubelet_size, orig_size, orig_size,
+                                                embedding_size)
+                pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
+                pos_tokens = torch.nn.functional.interpolate(
+                    pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
+                pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(-1, 16 // model.patch_embed.tubelet_size, new_size,
+                                                                    new_size, embedding_size)
+                pos_tokens = pos_tokens.flatten(1, 3)
+                new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
+                checkpoint_model['pos_embed'] = new_pos_embed
+
         load_state_dict(model, checkpoint_model, prefix='')
 
-    device = torch.device(params.device)
     model.to(device)
+    
+    # if torch.cuda.is_available():
+    #     print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    #     print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    # else:
+    #     print("CUDA not available, using CPU")
 
-    # Define transforms (simplified)
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
+    video_transform = transforms.Compose([
+        GroupResize(224),
+        Stack(), 
+        ToTorchFormatTensor()
     ])
 
     # Get all video files
@@ -258,22 +330,32 @@ if __name__ == '__main__':
         print(f"Processing video '{video_name}' ({i}/{len(video_files)})...")
 
         # Create smart dataset that only extracts needed frames
-        dataset = SmartVideoDataset(video_path, transform=transform)
+        dataset = SmartVideoDataset(video_path, transform=video_transform)
         
         try:
+            # Clear GPU cache before processing
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                        
             data_loader = torch.utils.data.DataLoader(
                 dataset,
                 batch_size=params.batch_size,
-                num_workers=1,  # Keep low for temp files
-                drop_last=False,
+                num_workers=10,
+                drop_last=True,
             )
 
             for images, video_name_batch in data_loader:
                 images = images.to(device)
-                embedding = model(images)
+                
+                with torch.no_grad():
+                    embedding = model(images)
 
                 print("embedding :", embedding.shape)
                 embedding = embedding.cpu().detach().numpy()
+
+                # Clear GPU cache after inference
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 # save results
                 EMBEDDING_DIM = max(-1, np.shape(embedding)[-1])
@@ -281,7 +363,21 @@ if __name__ == '__main__':
 
                 csv_file = os.path.join(save_dir, f'{video_name_single}.npy')
                 
-                if params.feature_level == 'UTTERANCE':
+                if params.feature_level == 'FRAME':
+                    embedding = np.array(embedding).squeeze()
+                    if len(embedding) == 0:
+                        embedding = np.zeros((1, EMBEDDING_DIM))
+                    elif len(embedding.shape) == 1:
+                        embedding = embedding[np.newaxis, :]
+                    np.save(csv_file, embedding)
+                elif params.feature_level == 'BLK':
+                    embedding = np.array(embedding)
+                    if len(embedding) == 0:
+                        embedding = np.zeros((257, EMBEDDING_DIM))
+                    elif len(embedding.shape) == 3:
+                        embedding = np.mean(embedding, axis=0)
+                    np.save(csv_file, embedding)
+                else:  # UTTERANCE
                     embedding = np.array(embedding).squeeze()
                     if len(embedding) == 0:
                         embedding = np.zeros((EMBEDDING_DIM,))
