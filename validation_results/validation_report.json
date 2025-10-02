@@ -1,0 +1,22 @@
+{
+  "validation_results": {
+    "dimension_check": true,
+    "non_constant_check": true,
+    "reasonable_range_check": true,
+    "diversity_check": true,
+    "zero_ratio_check": true
+  },
+  "checks_passed": 5,
+  "total_checks": 5,
+  "feature_stats": {
+    "total_features": 214,
+    "feature_dimension": 1024,
+    "zero_ratio": 0.0,
+    "mean_similarity": 0.4340420663356781,
+    "feature_std": 0.06768857687711716,
+    "feature_range": [
+      -1.8731958866119385,
+      0.9146173596382141
+    ]
+  }
+}
