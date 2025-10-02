@@ -209,3 +209,5 @@ __marimo__/
 models_weights/
 
 models/
+
+logs/
