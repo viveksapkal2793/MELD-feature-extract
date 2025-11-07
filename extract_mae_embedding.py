@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import cv2
 import tempfile
 import shutil
+import pandas as pd
 
 import torch
 import torch.nn.parallel
@@ -34,9 +35,25 @@ import scipy.stats as stats
 
 class TempVideoDataset(torch.utils.data.Dataset):
     """Dataset that extracts frames on-the-fly from a video file"""
-    def __init__(self, video_path, transform=None):
+    def __init__(self, video_path, transform=None, bbox_csv=None, dia_id=None, utt_id=None, split="train"):
         self.video_path = video_path
         self.transform = transform
+        self.bbox_csv = bbox_csv
+        self.dia_id = dia_id
+        self.utt_id = utt_id
+        self.split = split
+        
+        # Load bounding box data if provided
+        self.bbox_data = None
+        if bbox_csv and os.path.exists(bbox_csv) and dia_id is not None and utt_id is not None:
+            try:
+                df = pd.read_csv(bbox_csv)
+                self.bbox_data = df[(df["Split"] == self.split) & (df["Dialogue ID"] == dia_id) & (df["Utterance ID"] == utt_id)]
+                print(f"Loaded {len(self.bbox_data)} bounding box entries for {self.split} split, dia{dia_id}_utt{utt_id}")
+            except Exception as e:
+                print(f"Warning: Could not load bbox data: {e}")
+                self.bbox_data = None
+
         self.frames = self._extract_frames_to_temp()
         
     def _extract_frames_to_temp(self):
@@ -52,10 +69,28 @@ class TempVideoDataset(torch.utils.data.Dataset):
             if not success:
                 break
                 
+            # Apply face cropping if bbox data is available
+            processed_frame = frame
+            if self.bbox_data is not None:
+                frame_bbox = self.bbox_data[self.bbox_data["Frame Number"] == frame_count]
+                if len(frame_bbox) > 0:
+                    # Use the first bounding box if multiple exist
+                    bbox = frame_bbox.iloc[0]
+                    y_top, y_bottom = int(bbox["Y Top"]), int(bbox["Y Bottom"])
+                    x_left, x_right = int(bbox["X Left"]), int(bbox["X Right"])
+                    
+                    # Validate coordinates
+                    if (y_top >= 0 and y_bottom <= frame.shape[0] and 
+                        x_left >= 0 and x_right <= frame.shape[1] and
+                        y_bottom > y_top and x_right > x_left):
+                        processed_frame = frame[y_top:y_bottom, x_left:x_right]
+                    else:
+                        print(f"Warning: Invalid bbox coordinates for frame {frame_count}")
+                
             # Save frame temporarily
             frame_filename = f"{frame_count + 1:05d}.bmp"
             frame_path = os.path.join(self.temp_dir, frame_filename)
-            cv2.imwrite(frame_path, frame)
+            cv2.imwrite(frame_path, processed_frame)
             frame_paths.append(frame_path)
             frame_count += 1
             
@@ -78,6 +113,23 @@ class TempVideoDataset(torch.utils.data.Dataset):
         if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
+def extract_ids_from_filename(video_name):
+    """Extract dialogue ID and utterance ID from video filename"""
+    # Assuming format like "dia123_utt456" or similar
+    try:
+        if "dia" in video_name and "utt" in video_name:
+            parts = video_name.split("_")
+            dia_part = [p for p in parts if p.startswith("dia")]
+            utt_part = [p for p in parts if p.startswith("utt")]
+            
+            if dia_part and utt_part:
+                dia_id = int(dia_part[0][3:])  # Remove "dia" prefix
+                utt_id = int(utt_part[0][3:])  # Remove "utt" prefix
+                return dia_id, utt_id
+    except:
+        pass
+    
+    return None, None
 
 def extract(data_loader, model, device):
     model.eval()
@@ -112,6 +164,9 @@ if __name__ == '__main__':
     parser.add_argument('--cls_token', action='store_false', dest='global_pool',
                         help='Use class token instead of global pool for classification')
     parser.add_argument('--batch_size', default=512, type=int)
+    parser.add_argument('--bbox_csv', type=str, default=None, help='Path to CSV file with bounding box coordinates')
+    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'], 
+                        help='Dataset split to use for bounding box filtering (default: train)')
 
     params = parser.parse_args()
 
@@ -139,7 +194,8 @@ if __name__ == '__main__':
     
     if True:
         checkpoint_file = os.path.join(
-            "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
+            "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights",
+            # "D:\Acads\BTP\preprocessing_code\models_weights",
             f"{params.pretrain_model}.pth"
         )
         checkpoint = torch.load(checkpoint_file, map_location=params.device, weights_only=False)
@@ -173,8 +229,12 @@ if __name__ == '__main__':
         
         print(f"Processing video '{video_name}' ({i}/{len(video_files)})...")
 
+        # Extract dialogue and utterance IDs for bbox lookup
+        dia_id, utt_id = extract_ids_from_filename(video_name)
         # Create temporary dataset
-        dataset = TempVideoDataset(video_path, transform=transform)
+        dataset = TempVideoDataset(video_path, transform=transform, 
+                                  bbox_csv=params.bbox_csv, dia_id=dia_id, utt_id=utt_id, 
+                                  split=params.split)
         
         try:
             if len(dataset) == 0:

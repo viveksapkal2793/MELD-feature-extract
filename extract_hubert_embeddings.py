@@ -257,7 +257,7 @@ if __name__ == '__main__':
                        help='feature level [UTTERANCE only for audio]')
     parser.add_argument('--hubert_model', type=str, default='facebook/hubert-large-ls960-ft', 
                        help='HuBERT model name or path')
-    parser.add_argument('--feature_name', type=str, default='hubert_large', 
+    parser.add_argument('--feature_name', type=str, default='hubert_large_english', 
                        help='name for saved features')
     parser.add_argument('--device', default='cuda:0', help='device to use for extraction')
     parser.add_argument('--batch_size', default=8, type=int, 

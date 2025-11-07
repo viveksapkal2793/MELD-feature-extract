@@ -45,9 +45,9 @@ def download_hubert_model(model_name, local_dir):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Download HuBERT model locally')
-    parser.add_argument('--model_name', type=str, default='TencentGameMate/chinese-hubert-large',
+    parser.add_argument('--model_name', type=str, default='facebook/hubert-large-ls960-ft',
                        help='HuBERT model name from Hugging Face')
-    parser.add_argument('--local_dir', type=str, default='./models/chinese-hubert-large',
+    parser.add_argument('--local_dir', type=str, default='./models/hubert-large-english',
                        help='Local directory to save the model')
     
     args = parser.parse_args()

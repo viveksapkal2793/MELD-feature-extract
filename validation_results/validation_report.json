@@ -3,20 +3,20 @@
     "dimension_check": true,
     "non_constant_check": true,
     "reasonable_range_check": true,
-    "diversity_check": true,
+    "diversity_check": false,
     "zero_ratio_check": true
   },
-  "checks_passed": 5,
+  "checks_passed": 4,
   "total_checks": 5,
   "feature_stats": {
-    "total_features": 214,
+    "total_features": 101,
     "feature_dimension": 1024,
     "zero_ratio": 0.0,
-    "mean_similarity": 0.4340420663356781,
-    "feature_std": 0.06768857687711716,
+    "mean_similarity": 0.9352422952651978,
+    "feature_std": 0.25250107049942017,
     "feature_range": [
-      -1.8731958866119385,
-      0.9146173596382141
+      -1.7453752756118774,
+      1.0067744255065918
     ]
   }
 }
