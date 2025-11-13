@@ -35,7 +35,7 @@ from maeVideo.video_transform import *
 
 class SmartVideoDataset(torch.utils.data.Dataset):
     """Dataset that extracts only needed frames from videos on-the-fly"""
-    def __init__(self, video_path, num_segments=8, new_length=2, transform=None, bbox_csv=None, dia_id=None, utt_id=None, split="train"):
+    def __init__(self, video_path, num_segments=8, new_length=2, transform=None, bbox_csv=None, dia_id=None, utt_id=None, split="train", save_cropped_dir=None, video_name=None):
         self.video_path = video_path
         self.num_segments = num_segments
         self.new_length = new_length
@@ -44,6 +44,16 @@ class SmartVideoDataset(torch.utils.data.Dataset):
         self.dia_id = dia_id
         self.utt_id = utt_id
         self.split = split
+        self.save_cropped_dir = save_cropped_dir
+        self.video_name = video_name
+        
+        # Create directory for saving cropped frames if specified
+        if self.save_cropped_dir and self.video_name:
+            self.cropped_frames_dir = os.path.join(self.save_cropped_dir, self.video_name)
+            os.makedirs(self.cropped_frames_dir, exist_ok=True)
+            print(f"Will save cropped frames to: {self.cropped_frames_dir}")
+        else:
+            self.cropped_frames_dir = None
         
         # Load bounding box data if provided
         self.bbox_data = None
@@ -93,13 +103,14 @@ class SmartVideoDataset(torch.utils.data.Dataset):
         return sorted(set(indices))  # Remove duplicates and sort
     
     def _extract_selected_frames(self):
-        """Extract only the frames we need"""
+        """Extract only the frames we need with optional face cropping and verification saving"""
         self.temp_dir = tempfile.mkdtemp()
         cap = cv2.VideoCapture(self.video_path)
         
         frame_paths = []
         current_frame = 0
         frame_index_set = set(self.frame_indices)
+        cropped_count = 0
         
         while cap.isOpened() and current_frame <= max(self.frame_indices):
             success, frame = cap.read()
@@ -109,6 +120,8 @@ class SmartVideoDataset(torch.utils.data.Dataset):
             if current_frame in frame_index_set:
                 # Apply face cropping if bbox data is available
                 processed_frame = frame
+                was_cropped = False
+                
                 if self.bbox_data is not None:
                     frame_bbox = self.bbox_data[self.bbox_data["Frame Number"] == current_frame]
                     if len(frame_bbox) > 0:
@@ -122,10 +135,25 @@ class SmartVideoDataset(torch.utils.data.Dataset):
                             x_left >= 0 and x_right <= frame.shape[1] and
                             y_bottom > y_top and x_right > x_left):
                             processed_frame = frame[y_top:y_bottom, x_left:x_right]
+                            was_cropped = True
+                            cropped_count += 1
+                            
+                            # Save cropped frame for verification if directory specified
+                            if self.cropped_frames_dir:
+                                cropped_filename = f"frame_{current_frame:05d}_cropped.jpg"
+                                cropped_path = os.path.join(self.cropped_frames_dir, cropped_filename)
+                                cv2.imwrite(cropped_path, processed_frame)
+                                
+                                # Also save original frame with bounding box drawn
+                                original_with_bbox = frame.copy()
+                                cv2.rectangle(original_with_bbox, (x_left, y_top), (x_right, y_bottom), (0, 255, 0), 2)
+                                bbox_filename = f"frame_{current_frame:05d}_bbox.jpg"
+                                bbox_path = os.path.join(self.cropped_frames_dir, bbox_filename)
+                                cv2.imwrite(bbox_path, original_with_bbox)
                         else:
                             print(f"Warning: Invalid bbox coordinates for frame {current_frame}")
                 
-                # Save this frame
+                # Save this frame to temp directory for model processing
                 frame_filename = f"{current_frame:05d}.bmp"
                 frame_path = os.path.join(self.temp_dir, frame_filename)
                 cv2.imwrite(frame_path, processed_frame)
@@ -134,6 +162,9 @@ class SmartVideoDataset(torch.utils.data.Dataset):
             current_frame += 1
             
         cap.release()
+        
+        if self.bbox_data is not None:
+            print(f"Cropped {cropped_count}/{len(frame_paths)} sampled frames using bounding boxes")
         
         # Pad to get exactly 16 frames (8 segments * 2 frames each)
         while len(frame_paths) < 16:
@@ -272,8 +303,10 @@ if __name__ == '__main__':
                         help='Use class token instead of global pool for classification')
     parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--bbox_csv', type=str, default=None, help='Path to CSV file with bounding box coordinates')
-    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'], 
+    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test', 'dev'], 
                         help='Dataset split to use for bounding box filtering (default: train)')
+    parser.add_argument('--save_cropped_frames', type=str, default=None, 
+                        help='Directory to save cropped frames for verification (optional)')
 
     params = parser.parse_args()
 
@@ -284,6 +317,11 @@ if __name__ == '__main__':
     
     if not os.path.exists(save_dir): 
         os.makedirs(save_dir)
+    
+    # Create directory for cropped frames if specified
+    if params.save_cropped_frames:
+        os.makedirs(params.save_cropped_frames, exist_ok=True)
+        print(f"Will save cropped frames to: {params.save_cropped_frames}")
 
     # Check device availability
     if params.device.startswith('cuda') and torch.cuda.is_available():
@@ -298,8 +336,8 @@ if __name__ == '__main__':
 
     if True:
         checkpoint_file = os.path.join(
-            "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
-            # "D:\Acads\BTP\preprocessing_code\models_weights",
+            # "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights", 
+            "D:\Acads\BTP\preprocessing_code\models_weights",
             f"{params.pretrain_model}.pth"
         )
         print("Load pre-trained checkpoint from: %s" % checkpoint_file)
@@ -361,11 +399,11 @@ if __name__ == '__main__':
 
     model.to(device)
     
-    # if torch.cuda.is_available():
-    #     print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-    #     print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-    # else:
-    #     print("CUDA not available, using CPU")
+    if torch.cuda.is_available():
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    else:
+        print("CUDA not available, using CPU")
 
     video_transform = transforms.Compose([
         GroupResize(224),
@@ -386,10 +424,17 @@ if __name__ == '__main__':
         # Extract dialogue and utterance IDs for bbox lookup
         dia_id, utt_id = extract_ids_from_filename(video_name)
 
-        # Create smart dataset that only extracts needed frames with optional face cropping
-        dataset = SmartVideoDataset(video_path, transform=video_transform,
-                                   bbox_csv=params.bbox_csv, dia_id=dia_id, utt_id=utt_id, 
-                                   split=params.split)
+        # Create smart dataset with optional cropped frame saving
+        dataset = SmartVideoDataset(
+            video_path, 
+            transform=video_transform,
+            bbox_csv=params.bbox_csv, 
+            dia_id=dia_id, 
+            utt_id=utt_id, 
+            split=params.split,
+            save_cropped_dir=params.save_cropped_frames,
+            video_name=video_name
+        )
         
         try:
             # Clear GPU cache before processing
@@ -451,16 +496,7 @@ if __name__ == '__main__':
             dataset.cleanup()
             print(f"Cleaned up temporary files for {video_name}")
 
-# MER2023
-# python -u extract_maeVideo_embedding.py    --dataset='MER2023' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='maeVideo_ckp199' --feature_name='maeVideo'
-
-# EMER
-# python -u extract_maeVideo_embedding.py    --dataset='EMER' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='maeVideo_ckp199' --feature_name='maeVideo'
-
-# MER2024
-# python -u extract_maeVideo_embedding.py    --dataset='MER2024' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='maeVideo_ckp199' --feature_name='maeVideo'
-# MER2024_20000
-# python -u extract_maeVideo_embedding.py    --dataset='MER2024_20000' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='maeVideo_ckp199' --feature_name='maeVideo'
-
-# DFEW
-# python -u extract_maeVideo_embedding.py    --dataset='DFEW' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='maeVideo_ckp199' --feature_name='maeVideo'
+    print(f"\n==> Feature extraction complete!")
+    print(f"Features saved to: {save_dir}")
+    if params.save_cropped_frames:
+        print(f"Cropped frames saved to: {params.save_cropped_frames}")

@@ -35,13 +35,23 @@ import scipy.stats as stats
 
 class TempVideoDataset(torch.utils.data.Dataset):
     """Dataset that extracts frames on-the-fly from a video file"""
-    def __init__(self, video_path, transform=None, bbox_csv=None, dia_id=None, utt_id=None, split="train"):
+    def __init__(self, video_path, transform=None, bbox_csv=None, dia_id=None, utt_id=None, split="train", save_cropped_dir=None, video_name=None):
         self.video_path = video_path
         self.transform = transform
         self.bbox_csv = bbox_csv
         self.dia_id = dia_id
         self.utt_id = utt_id
         self.split = split
+        self.save_cropped_dir = save_cropped_dir
+        self.video_name = video_name
+        
+        # Create directory for saving cropped frames if specified
+        if self.save_cropped_dir and self.video_name:
+            self.cropped_frames_dir = os.path.join(self.save_cropped_dir, self.video_name)
+            os.makedirs(self.cropped_frames_dir, exist_ok=True)
+            print(f"Will save cropped frames to: {self.cropped_frames_dir}")
+        else:
+            self.cropped_frames_dir = None
         
         # Load bounding box data if provided
         self.bbox_data = None
@@ -63,6 +73,7 @@ class TempVideoDataset(torch.utils.data.Dataset):
         
         frame_paths = []
         frame_count = 0
+        cropped_count = 0
         
         while cap.isOpened():
             success, frame = cap.read()
@@ -71,6 +82,8 @@ class TempVideoDataset(torch.utils.data.Dataset):
                 
             # Apply face cropping if bbox data is available
             processed_frame = frame
+            was_cropped = False
+            
             if self.bbox_data is not None:
                 frame_bbox = self.bbox_data[self.bbox_data["Frame Number"] == frame_count]
                 if len(frame_bbox) > 0:
@@ -84,10 +97,25 @@ class TempVideoDataset(torch.utils.data.Dataset):
                         x_left >= 0 and x_right <= frame.shape[1] and
                         y_bottom > y_top and x_right > x_left):
                         processed_frame = frame[y_top:y_bottom, x_left:x_right]
+                        was_cropped = True
+                        cropped_count += 1
+                        
+                        # Save cropped frame for verification if directory specified
+                        if self.cropped_frames_dir:
+                            cropped_filename = f"frame_{frame_count:05d}_cropped.jpg"
+                            cropped_path = os.path.join(self.cropped_frames_dir, cropped_filename)
+                            cv2.imwrite(cropped_path, processed_frame)
+                            
+                            # Also save original frame with bounding box drawn
+                            original_with_bbox = frame.copy()
+                            cv2.rectangle(original_with_bbox, (x_left, y_top), (x_right, y_bottom), (0, 255, 0), 2)
+                            bbox_filename = f"frame_{frame_count:05d}_bbox.jpg"
+                            bbox_path = os.path.join(self.cropped_frames_dir, bbox_filename)
+                            cv2.imwrite(bbox_path, original_with_bbox)
                     else:
                         print(f"Warning: Invalid bbox coordinates for frame {frame_count}")
                 
-            # Save frame temporarily
+            # Save frame temporarily for model processing
             frame_filename = f"{frame_count + 1:05d}.bmp"
             frame_path = os.path.join(self.temp_dir, frame_filename)
             cv2.imwrite(frame_path, processed_frame)
@@ -95,6 +123,10 @@ class TempVideoDataset(torch.utils.data.Dataset):
             frame_count += 1
             
         cap.release()
+        
+        if self.bbox_data is not None:
+            print(f"Cropped {cropped_count}/{frame_count} frames using bounding boxes")
+        
         return frame_paths
     
     def __len__(self):
@@ -165,8 +197,10 @@ if __name__ == '__main__':
                         help='Use class token instead of global pool for classification')
     parser.add_argument('--batch_size', default=512, type=int)
     parser.add_argument('--bbox_csv', type=str, default=None, help='Path to CSV file with bounding box coordinates')
-    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'], 
+    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test', 'dev'], 
                         help='Dataset split to use for bounding box filtering (default: train)')
+    parser.add_argument('--save_cropped_frames', type=str, default=None, 
+                        help='Directory to save cropped frames for verification (optional)')
 
     params = parser.parse_args()
 
@@ -177,6 +211,11 @@ if __name__ == '__main__':
     
     if not os.path.exists(save_dir): 
         os.makedirs(save_dir)
+    
+    # Create directory for cropped frames if specified
+    if params.save_cropped_frames:
+        os.makedirs(params.save_cropped_frames, exist_ok=True)
+        print(f"Will save cropped frames to: {params.save_cropped_frames}")
 
     # load model
     model = models_vit.__dict__[params.model](
@@ -194,8 +233,8 @@ if __name__ == '__main__':
     
     if True:
         checkpoint_file = os.path.join(
-            "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights",
-            # "D:\Acads\BTP\preprocessing_code\models_weights",
+            # "/scratch/data/bikash_rs/vivek/MELD-feature-extract/models_weights",
+            "D:\Acads\BTP\preprocessing_code\models_weights",
             f"{params.pretrain_model}.pth"
         )
         checkpoint = torch.load(checkpoint_file, map_location=params.device, weights_only=False)
@@ -231,10 +270,18 @@ if __name__ == '__main__':
 
         # Extract dialogue and utterance IDs for bbox lookup
         dia_id, utt_id = extract_ids_from_filename(video_name)
-        # Create temporary dataset
-        dataset = TempVideoDataset(video_path, transform=transform, 
-                                  bbox_csv=params.bbox_csv, dia_id=dia_id, utt_id=utt_id, 
-                                  split=params.split)
+        
+        # Create temporary dataset with optional cropped frame saving
+        dataset = TempVideoDataset(
+            video_path, 
+            transform=transform, 
+            bbox_csv=params.bbox_csv, 
+            dia_id=dia_id, 
+            utt_id=utt_id, 
+            split=params.split,
+            save_cropped_dir=params.save_cropped_frames,
+            video_name=video_name
+        )
         
         try:
             if len(dataset) == 0:
@@ -269,23 +316,13 @@ if __name__ == '__main__':
                 elif len(embeddings.shape) == 2:
                     embeddings = np.mean(embeddings, axis=0)
                 np.save(csv_file, embeddings)
-                
+                 
         finally:
             # Always cleanup temporary files
             dataset.cleanup()
             print(f"Cleaned up temporary files for {video_name}")
 
-
-# EMER
-# python -u extract_mae_embedding.py    --dataset='EMER' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='mae_checkpoint-340' --feature_name='mae_checkpoint-340'
-
-# MER2023
-# python -u extract_mae_embedding.py    --dataset='MER2023' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='mae_checkpoint-340' --feature_name='mae_checkpoint-340'
-
-# MER2024
-# python -u extract_mae_embedding.py    --dataset='MER2024' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='mae_checkpoint-340' --feature_name='mae_checkpoint-340'
-# MER2024_20000
-# python -u extract_mae_embedding.py    --dataset='MER2024_20000' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='mae_checkpoint-340' --feature_name='mae_checkpoint-340'
-
-# DFEW
-# python -u extract_mae_embedding.py    --dataset='DFEW' --feature_level='UTTERANCE' --device='cuda:0'  --pretrain_model='mae_checkpoint-340' --feature_name='mae_checkpoint-340'
+    print(f"\n==> Feature extraction complete!")
+    print(f"Features saved to: {save_dir}")
+    if params.save_cropped_frames:
+        print(f"Cropped frames saved to: {params.save_cropped_frames}")

@@ -258,7 +258,7 @@ def quick_sanity_check(embedding_path):
     return all_passed
 
 if __name__ == '__main__':
-    embedding_dir = "D:/Acads/BTP/MELD/MELD.VideoFrames/dev_videomae_feat"
+    embedding_dir = "D:/Acads/BTP/MELD/MELD.new/test_mae_feat"
     report = comprehensive_validation(embedding_dir)
     print(f"\n=== FINAL REPORT ===")
     for key, value in report.items():
